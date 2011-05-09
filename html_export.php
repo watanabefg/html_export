@@ -32,7 +32,7 @@ function html_export_help($section) {
     switch ($section) {
     case 'admin':
         //return t("HTML Export lets you export your drupal site to static HTML.");
-        return t("HTML Export �͂��Ȃ���drupal�T�C�g��ÓI HTML �o�͂��܂�.");
+        return t("HTMLエクスポートはあなたのdrupalサイトを静的html出力します.");
     }
 }
 /*
@@ -115,7 +115,6 @@ function html_export_settings() {
     );
     $form['#submit'] = array('html_export_settings_submit');
     return system_settings_form($form);  
-
 }
 
 /*
@@ -194,10 +193,12 @@ function _html_export_export(){
     file_check_directory(file_create_path($export_path . '/themes'),1);
     file_check_directory(file_create_path($export_path . '/misc'),1);
 
+    // index.phpはsites/default/files/html_export/html_export**********/に展開される
     $export_path = str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . $export_path;
 
     //run the copyr function, modified to work with zip archive; copy the files,themes,sites,and misc directories
     //_html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . file_directory_path(),$export_path . '/' . file_directory_path());
+    // drupalのサイト内容が先にコピーされる
     _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'sites',$export_path . '/sites');
     _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'modules',$export_path . '/modules');
     _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'themes',$export_path . '/themes');
@@ -205,9 +206,10 @@ function _html_export_export(){
 
     //grab all the nodes in the system that are published and then build out a list of url's to rename in the rendered code.
     //similar to url rewrite and will need to take that into account eventually
-    $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
+    // ノードがコピーされる
+    $result_node = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
     $nids = array();
-    while($node = db_fetch_array($result)){
+    while($node = db_fetch_array($result_node)){
         $url = url('node/' . $node['nid']);
         if(strpos(' ' . $url,'/?q=') != 0){
             $url = substr($url,4 + strpos($url,'/?q='));
@@ -224,6 +226,7 @@ function _html_export_export(){
         }
     }
 
+    // 今回はなし
     if (module_exists('views')) {
         //grab all the views in the system that are published and then build out a list of url's to rename in the rendered code.
         //similar to url rewrite and will need to take that into account eventually
@@ -245,6 +248,20 @@ function _html_export_export(){
         }
     }
 
+    // Export term pages
+    // 追加
+    $result = db_query("SELECT * FROM {term_data} ORDER BY tid");
+    while ($term = db_fetch_array($result)){
+        _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . $term['name'],$export_path . '/misc');
+        $url = url('taxonomy/term/'. $term['tid']);
+        if (strpos(' '. $url, '/?q=') != 0){
+            $url = substr($url, 4+strpos($url, '/?q='));
+        }
+        if ($url == 'taxonomy/term/'. $term['tid']){
+            $nids['taxonomy/term/'. $term['tid']] = 'term'. $term['tid']. '.html';
+        }
+    }
+
     // Export custom pages
     $pages = explode(',',_html_export_make_list(variable_get('html_export_pages', '')));
     foreach ($pages as $page) {
@@ -255,10 +272,10 @@ function _html_export_export(){
     $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
     while($node = db_fetch_array($result)){
         $drupal_site = drupal_http_request($root . "index.php?q=node/" . $node['nid']);
-
         //drupal_set_message($root . "index.php?q=node/" . $node['nid']);
         $data = $drupal_site->data;
         //Rewrite all links
+        //TODO:_html_export_rewrite_urlsはバグがあるので修正する必要有。blogとtaxonomy/term関連
         $data = _html_export_rewrite_urls($data,$nids);
         // Write HTML to file
         $file = fopen($export_path . "/" . $nids['node/' . $node['nid']],"w");
@@ -266,6 +283,7 @@ function _html_export_export(){
         fclose($file);
     }
 
+    // 今回はなし
     if (module_exists('views')) {
         //run through all the views and render pages to add to the zip file
         $result = db_query("SELECT * FROM views_display WHERE display_plugin = 'page'");
@@ -285,6 +303,21 @@ function _html_export_export(){
         }
     }
 
+    // Export term pages
+    // 今回追加
+    $result = db_query("SELECT tid FROM {term_data} ORDER BY tid");
+    while ($term = db_fetch_array($result)){
+        $url = url('taxonomy/term/'. $term['tid']);
+        $drupal_site = drupal_http_request($root . "index.php" . $url);
+        $data = $drupal_site->data;
+        // Rewrite all links
+        $data = _html_export_rewrite_urls($data,$nids);
+        // Write HTML to file
+        $file = fopen($export_path . "/" . $nids['taxonomy/term/'. $term['tid']],"w");
+        fwrite($file,$data);
+        fclose($file);
+    }
+
     // Export custom pages
     $pages = explode(',',_html_export_make_list(variable_get('html_export_pages', '')));
     foreach ($pages as $page) {
@@ -302,7 +335,7 @@ function _html_export_export(){
     $drupal_site = drupal_http_request($root . "index.php");
     $data = $drupal_site->data;
     //Rewrite all links
-    // TODO:�����𒼂�
+    // TODO:これを直す必要がある
     $data = _html_export_rewrite_urls($data,$nids);
     // Write HTML to file
     $file = fopen($export_path . "/index.html","w");
@@ -394,7 +427,7 @@ function _html_export_make_list($text) {
  * Helper function to Convert a list to a comma seperated list.
  */
 function _html_export_root_domain($visit = true) {
-    //TODO:�߂��H
+    //TODO:????H
     //$root = $_SERVER['HTTP_HOST'];
     $root = substr($_SERVER['HTTP_REFERER'],0,strpos($_SERVER['HTTP_REFERER'],$_GET['q']));
     if(strpos($root,'?q=') != 0){
@@ -420,7 +453,7 @@ function _html_export_root_domain($visit = true) {
         $root='http://localhost/drupal/';
     } 
 */
-    drupal_set_message($root);
+    //drupal_set_message($root);
     return $root;
 }
 
