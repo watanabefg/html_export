@@ -25,6 +25,7 @@
 //with this program; if not, write to the Free Software Foundation, Inc.,
 //51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
+define("_TIME_LIMIT", 500000);
 /**
  * Implementation of hook_help
  */
@@ -40,10 +41,10 @@ function html_export_help($section) {
  */
 function html_export_cron() {
   if ( (time() - variable_get('html_export_last', time())) > variable_set('html_export_cron', 0) ){
+    // デバッグテスト
     _html_export_export();
   }
 }
-
 
 /**
  * Implementation of hook_menu
@@ -128,7 +129,6 @@ function html_export_settings_validate($form, &$form_state) {
   variable_set('html_export_domain', $form_state["values"]["html_export_domain"]);
 }
 
-
 /**
  * Implementation of hook_settings_submit
  */
@@ -138,21 +138,17 @@ function html_export_settings_submit($form_id, $form_values) {
   }
 }
 
-$count = 0;
-
 function _html_export_copyr($source, $dest){
   // Simple copy for a file
   if (is_file($source)) {
     return copy($source, $dest);
   }
   // Make destination directory
-  make_dest_dir($dest);
+  _make_dest_dir($dest);
   // Loop through the folder
   $dir = dir($source);
   while (false !== $entry = $dir->read()) {
-    //if this is the files folder then skip the pointers, the html_export directory (server == dead), and .htaccess files
-    //if not then Skip pointers to folders, .DS_Store, *.php, and .htaccess
-    if ($entry == '.' || $entry == '..' || $entry == 'README.txt' || $entry == 'LICENSE.txt' || $entry == '.DS_Store' || $entry == '.htaccess' || $entry == 'Thumbs.db' || strpos($entry,'.engine') != 0 || strpos($entry,'.php') != 0 || strpos($entry,'.inc') != 0 || strpos($entry,'.include') != 0 || strpos($entry,'.info') != 0 || strpos($entry,'.install') != 0 || strpos($entry,'.module') != 0){
+    if (_skip_files($entry)){
       continue;
     }
     // Deep copy directories, ignore the html_export ones
@@ -165,205 +161,154 @@ function _html_export_copyr($source, $dest){
   return true;
 }
 
-function make_dest_dir($dest){
+/**
+ * ディレクトリを作成する
+ */
+function _make_dest_dir($dest){
   if (!is_dir($dest)) {
     mkdir($dest);
   }
 }
 
 /**
+ * _skip_files
+ */
+function _skip_files($entry){
+  //if this is the files folder then skip the pointers, the html_export directory (server == dead), and .htaccess files
+  //if not then Skip pointers to folders, .DS_Store, *.php, and .htaccess
+  switch ((string) $entry){
+    case '.'  :
+    case '..' :
+    case 'README.txt' :
+    case 'LICENSE.txt' :
+    case '.DS_Store' :
+    case '.htaccess' :
+    case 'Thumbs.db' :
+      return true;
+      break;
+  }
+  $skip_exts = array('.engine',
+    '.php',
+    '.inc',
+    '.include',
+    '.info',
+    '.install',
+    '.module');
+  foreach ($skip_exts as $skip_ext){ 
+    if (strpos($entry, $skip_ext) != 0){
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Export all nodes / views etc
  */
 function _html_export_export(){
-  set_time_limit(500000);
+  set_time_limit(_TIME_LIMIT);
 
+  //クリーンURLの設定を保存
   $clean = variable_get('clean_url',0);
-  //turn clean URLs off temporarily if they are on
-  clean_url_off($clean);
+  _clean_url_off($clean);
 
   $root = _html_export_root_domain();
   //create a folder html_export to put the directory in
   $dir = file_create_path(file_directory_path() . '/html_export');
   file_check_directory($dir, 1);
-  $export_path = $dir . '/' . variable_get('html_export_folder', '');
+
+  $export_path = $dir. '/'. variable_get('html_export_folder', 'html_export');
   if (variable_get('html_export_timestamp', 0)) $export_path .= time();
 
-  // file_check_drupal_directories
-  file_check_drupal_directories($export_path);
+  //check&mkdir drupal setting directories
+  _file_check_drupal_directories($export_path);
 
   // index.phpはsites/default/files/html_export/html_export**********/に展開される
   $export_path = str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . $export_path;
 
   //run the copyr function, modified to work with zip archive; copy the files,themes,sites,and misc directories
-  //_html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . file_directory_path(),$export_path . '/' . file_directory_path());
-  // check&mkdir drupal setting directories
   _html_export_copy_drupal_directories($export_path);
 
   $nids = array();
   //grab all the nodes in the system that are published and then build out a list of url's to rename in the rendered code.
   //similar to url rewrite and will need to take that into account eventually
   // ノードを登録する
-  $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
-  while($node = db_fetch_array($result)){
-    $url = url('node/' . $node['nid']);
-    $url = trim_url_query($url);
-    if ($url == 'node/' . $node['nid']){
-      // 命名規則の変更
-      //$nids['node/' . $node['nid']] = 'page' . $node['nid'] . '.html';
-      $nids['node/' . $node['nid']] = 'node' . $node['nid'] . '.html';
-    }else{
-      $tmp_url = $url;
-      //this removes the fake extension if one exists
-      $tmp_url = _html_export_remove_ext($tmp_url);
-      // Add url to array
-      $nids[$url] = $tmp_url . '.html';
-      $nids['node/' . $node['nid']] = $tmp_url . '.html';
-    }
-  }
+  $nids = _set_nids_for_nodes($nids);
+  // フロントページ用にnodepagenationを登録する
+  $nodecount = _get_index_pages_having_pagenation();
+  $nids = _set_nids_for_nodepagenation($nids, $nodecount);
+  // views用にnodeを登録する
+  $nids = _set_nids_for_views($nids);
 
-  if (module_exists('views')) {
-    //grab all the views in the system that are published and then build out a list of url's to rename in the rendered code.
-    //similar to url rewrite and will need to take that into account eventually
-    $result = db_query("SELECT * FROM views_display WHERE display_plugin = 'page'");
-    while($view = db_fetch_array($result)){
-      $view_vars = unserialize($view['display_options']);
-      if (strpos($view_vars['path'],'admin/') === false && strpos($view_vars['path'],'front') === false){
-        $url = url($view_vars['path']);
-        $tmp_url = trim_url_query($url);
-        //this removes the fake extension if one exists
-        $tmp_url = _html_export_remove_ext($tmp_url);
-        // Add url to array
-        $nids[$url] = $tmp_url . '.html';
-      }
-    }
-  }
-
+  // pagenationが必要なtidを求める
+  $tids_need_pagenation = _get_tids_having_pagenation();
+  $tids_page = array();
   // termを登録する
   $result = db_query("SELECT * FROM {term_data} ORDER BY tid");
   while ($term = db_fetch_array($result)){
     // termを元にディレクトリを作成する
     file_check_directory(file_create_path($export_path . '/term'. $term['tid']),1);
-    // TODO:余力があればターム名で
-    //file_check_directory(file_create_path($export_path . '/'. _html_export_urlencode($term['name'])),1);
-    $url = url('taxonomy/term/'. $term['tid']);
-    $url = trim_url_query($url);
-    // URLの設定
-    if ($url == 'taxonomy/term/'. $term['tid']){
-      $nids['taxonomy/term/'. $term['tid']] = 'term'. $term['tid']. '/index.html';
-      //$nids['taxonomy/term/'. $term['tid']] = _html_export_urlencode($term['name']). '/index.html';
+
+    if (in_array($term['tid'], $tids_need_pagenation)){
+      // pagenationが必要であれば
+      $result_pages = db_query("SELECT truncate(count(*)/". variable_get('default_nodes_main', 10). ", 0) num FROM (".
+        "SELECT DISTINCT nid, tid FROM {term_node}".
+        ") AS temp WHERE temp.tid = ". $term['tid']);
+      // 必要なページ数
+      $pagenumber = db_fetch_array($result_pages);
+      $tids_page[$term['tid']] = $pagenumber['num'];
+      // ex.) tids_page = array('2' => 2, '4' => 1) タームID => ページ数
+      $nids = _set_nids_for_termpagenation($nids, $term['tid'], $pagenumber['num']);
     }
+    $nids = _set_nids_for_term($nids, $term['tid']);
   }
 
-  // feed関連
   // フロントページ(記事一覧)のrss.xmlの登録
-  $url = url("rss.xml");
-  $url = trim_url_query($url);
-  if ($url == "rss.xml"){
-    $nids["rss.xml"] = "rss.xml";
-  }
-
-  // Export custom pages
-  $pages = explode(',',_html_export_make_list(variable_get('html_export_pages', '')));
-  foreach ($pages as $page) {
-    $nids[$page] = $page . '.html';
-  }
+  $nids = _set_nids_for_xml($nids);
+  // カスタムページ用にnodeを登録する
+  $nids = _set_nids_for_custom_pages($nids);
 
   //run through all the nodes and render pages to add to the zip file
-  $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
-  while($node = db_fetch_array($result)){
-    $data = _get_html_data($root. "index.php?q=node/" . $node['nid']);
-    //Rewrite all links
-    //TODO:_html_export_rewrite_urlsはバグがあるので修正する必要有。blogとtaxonomy/term関連
-    //$data = _html_export_rewrite_urls($data,$nids);
-    $data = _html_export_rewrite_relative_urls($data,$nids, ".");
-    // Write HTML to file
-    _export_html_file($data, $nids['node/' . $node['nid']], $export_path, false);
-  }
-
-  if (module_exists('views')) {
-    //run through all the views and render pages to add to the zip file
-    $result = db_query("SELECT * FROM views_display WHERE display_plugin = 'page'");
-    while($view = db_fetch_array($result)){
-      $view_vars = unserialize($view['display_options']);
-      if (strpos($view_vars['path'],'admin/') === false && strpos($view_vars['path'],'front') === false){
-        $data = _get_html_data($root. $view_vars['path']);
-        //$data = _html_export_rewrite_urls($data,$nids);
-        $data = _html_export_rewrite_relative_urls($data,$nids, ".");
-        // Write HTML to file
-        _export_html_file($data, $nids[$view_vars['path']], $export_path, false);
-      }
-    }
-  }
-
-  // Export term pages
-  $result = db_query("SELECT tid FROM {term_data} ORDER BY tid");
-  while ($term = db_fetch_array($result)){
-    // ex.) index.php?q=taxonomy/term/1
-    $url = url('taxonomy/term/'. $term['tid']);
-    $data = _get_html_data($root. "index.php". $url);
-    //$data = _html_export_rewrite_urls($data,$nids);
-    $data = _html_export_rewrite_relative_urls($data,$nids, "..");
-    // Write HTML to file
-    $page = $nids['taxonomy/term/'. $term['tid']];
-    _export_html_file($data, $page, $export_path, false);
-  }
-
-  /* Export custom pages */
-  $pages = explode(',',_html_export_make_list(variable_get('html_export_pages', '')));
-  foreach ($pages as $page) {
-    $data = _get_html_data($root. $page);
-    //$data = _html_export_rewrite_urls($data,$nids);
-    $data = _html_export_rewrite_relative_urls($data,$nids, ".");
-    // Write HTML to file
-    _export_html_file($data, $page, $export_path, true);
-  }
-
-  /* Export homepage */
-  // get html
-  $data = _get_html_data($root. "index.php");
-  //$data = _html_export_rewrite_urls($data,$nids);
-  $data = _html_export_rewrite_relative_urls($data,$nids, ".");
-  // Write HTML to file
-  _export_html_file($data, "index", $export_path, true);
+  _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $tids_page, $nodecount);
 
   //turn clean URLs back on if it was off temporarily
-  clean_url_on($clean);
-
+  _clean_url_on($clean);
   // Save time last run
   variable_set('html_export_last', time());
+
   //need to generate a list of modules and themes to copy as well as files directory except for html_export folder
-  drupal_set_message("If you don't see any errors the site was exported successfully! <a href='" . base_path() . substr($export_path,strpos($export_path,$dir)) . "/index.html' target='_blank'>Click</a> here to access the export.");
+  $success_message = "If you don't see any errors the site was exported successfully! <a href='".
+                      base_path() . substr($export_path,strpos($export_path,$dir)) . 
+                      "/index.html' target='_blank'>Click</a> here to access the export.";
+  drupal_set_message($success_message);
 
   return true;
 }
 
-
 /**
  * turn clean url off
  */
-function clean_url_off($clean){
+function _clean_url_off($clean){
   if ($clean){
     variable_set('clean_url',0);
   }
 }
 
-
 /**
  * turn clean url on
  */
-function clean_url_on($clean){
+function _clean_url_on($clean){
   if ($clean){
     variable_set('clean_url',1);
   }
 }
 
-
 /**
- * file_check_drupal_directories
+ * _file_check_drupal_directories
  *
  * check&mkdir drupal setting directories
  */
-function file_check_drupal_directories($export_path){
+function _file_check_drupal_directories($export_path){
   file_check_directory(file_create_path($export_path),1);
   file_check_directory(file_create_path($export_path . '/' . file_directory_path()),1);
   file_check_directory(file_create_path($export_path . '/sites'),1);
@@ -371,7 +316,6 @@ function file_check_drupal_directories($export_path){
   file_check_directory(file_create_path($export_path . '/themes'),1);
   file_check_directory(file_create_path($export_path . '/misc'),1);
 }
-
 
 /**
  * _html_export_copy_drupal_directories
@@ -384,16 +328,283 @@ function _html_export_copy_drupal_directories($export_path){
   _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'misc',$export_path . '/misc');
 }
 
+/**
+ * ノードのnidsをセットする
+ * _set_nids_for_nodes()
+ */
+function _set_nids_for_nodes($nids){
+  $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
+  while($node = db_fetch_array($result)){
+    $url = url('node/' . $node['nid']);
+    $url = _trim_url_query($url);
+    if ($url == 'node/' . $node['nid']){
+      // 命名規則の変更
+      // $nids['node/' . $node['nid']] = 'page' . $node['nid'] . '.html';
+      $nids['node/'. $node['nid']] = 'node'. $node['nid']. '.html';
+    }else{
+      //this removes the fake extension if one exists
+      $tmp_url = _html_export_remove_ext($url);
+      // Add url to array
+      $nids[$url] = $tmp_url . '.html';
+      $nids['node/' . $node['nid']] = $tmp_url . '.html';
+    }
+  }
+  return $nids;
+}
 
 /**
- * trim_url_query
+ * フロントページのnodeのpagenation用にnidsにマッピング
+ */
+function _set_nids_for_nodepagenation($nids, $nodecount){
+  for ($i = $nodecount; $i > 0; $i--){
+    $nids['node&amp;page='.$i] = 'page' . $i . '.html';
+  }
+  // フロントページ用のマッピング
+  $nids["node"] = "index.html";
+  return $nids;
+}
+
+/**
+ * views用にnidsにマッピング
+ */
+function _set_nids_for_views($nids){
+  if (module_exists('views')) {
+    //grab all the views in the system that are published and then build out a list of url's to rename in the rendered code.
+    //similar to url rewrite and will need to take that into account eventually
+    $result = db_query("SELECT * FROM views_display WHERE display_plugin = 'page'");
+    while($view = db_fetch_array($result)){
+      $view_vars = unserialize($view['display_options']);
+      if (strpos($view_vars['path'],'admin/') === false && strpos($view_vars['path'],'front') === false){
+        $url = url($view_vars['path']);
+        $tmp_url = _trim_url_query($url);
+        //this removes the fake extension if one exists
+        $tmp_url = _html_export_remove_ext($tmp_url);
+        // Add url to array
+        $nids[$url] = $tmp_url . '.html';
+      }
+    }
+  }
+  return $nids;
+}
+
+/**
+ * _set_nids_for_custom_pages
+ * カスタムページ用にnidsにマッピング
+ */
+function _set_nids_for_custom_pages($nids){
+  // Export custom pages
+  $pages = explode(',',_html_export_make_list(variable_get('html_export_pages', '')));
+  foreach ($pages as $page) {
+    $nids[$page] = $page . '.html';
+  }
+  return $nids;
+}
+
+/**
+ * _set_nids_for_term
+ * termをtidsにセットする
+ */
+function _set_nids_for_term($nids, $tid){
+  // TODO:余力があればターム名で
+  //file_check_directory(file_create_path($export_path . '/'. _html_export_urlencode($term['name'])),1);
+  $url = url('taxonomy/term/'. $tid);
+  $url = _trim_url_query($url);
+  // URLの設定
+  if ($url == 'taxonomy/term/'. $tid){
+    $nids['taxonomy/term/'. $tid] = 'term'. $tid. '/index.html';
+  }
+  return $nids;
+}
+
+/**
+ * _set_nids_for_termpagenation
+ * tidのpagenationをnidsにマッピング
+ */
+function _set_nids_for_termpagenation($nids, $tid, $pagenumber){
+  for ($i = $pagenumber; $i > 0; $i--){
+    $url = 'taxonomy/term/'. $tid. '&amp;page='. $i;
+    $nids[$url] = 'term'. $tid. '/page'. $i. '.html';
+  }
+  return $nids;
+}
+
+/**
+ * _set_nids_for_xml
+ * xmlをnidsに登録する
+ */
+function _set_nids_for_xml($nids){
+  $url = url("rss.xml");
+  $url = _trim_url_query($url);
+  if ($url == "rss.xml"){
+    $nids["rss.xml"] = "rss.xml";
+  }
+  return $nids;
+}
+
+/**
+ * _get_tids_having_pagenation
+ * ページナビゲーションが必要なtidを返す
+ */
+function _get_tids_having_pagenation(){
+  $default_nodes_main = variable_get('default_nodes_main', 10);
+  $pagenation_num = $default_nodes_main + 1;
+  $query = "SELECT tid FROM (SELECT DISTINCT nid, tid FROM {term_node} ) AS temp GROUP BY tid HAVING COUNT(*) >= "
+    . $pagenation_num;
+  $result = db_query($query);
+  $tids = array();
+  while($tid = db_fetch_array($result)){
+    $tids[] = $tid['tid'];
+  }
+
+  return $tids;
+}
+
+/**
+ * _get_index_pages_having_pagenation
+ * ページナビゲーションが必要なインデックスページのページ数を返す
+ */
+function _get_index_pages_having_pagenation(){
+  $default_nodes_main = variable_get('default_nodes_main', 10);
+  $pagenation_num = $default_nodes_main + 1;
+  $query = "SELECT CEIL(count(*) DIV ". variable_get('default_nodes_main', 10).
+    ") num FROM {node} WHERE status = 1 AND type in ('story', 'blog')";
+  $result = db_query($query);
+  $nodecount = db_fetch_array($result);
+
+  return $nodecount['num'] - 1;
+}
+
+/**
+ * _trim_url_query
  * ex.) ?q=node/1 -> node/1
  */
-function trim_url_query($url){
+function _trim_url_query($url){
   if (strpos(' ' . $url,'/?q=') != 0){
     $url = substr($url,4 + strpos($url,'/?q='));
   }
   return $url;
+}
+
+/**
+ * 全てのページのhtml出力
+ */
+function _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $tids_page, $nodecount){
+  _export_nodes($root, $nids, $export_path);
+  _export_views($root, $nids, $export_path);
+  // Export term pages
+  _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_path);
+  /* Export custom pages */
+  _export_custom_pages($root, $nids, $export_path);
+  /* Export homepage */
+  _export_front_page($root, $nodecount, $nids, $export_path);
+}
+
+/**
+ * _export_nodes
+ * nodesをhtml出力する
+ */
+function _export_nodes($root, $nids, $export_path){
+  $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
+  while($node = db_fetch_array($result)){
+    $data = _get_html_data($root. "index.php?q=node/" . $node['nid']);
+    //Rewrite all links
+    //TODO:_html_export_rewrite_urlsはblogに対応していないので修正する必要有。
+    $data = _html_export_rewrite_relative_urls($data,$nids, ".");
+    // Write HTML to file
+    _export_html_file($data, $nids['node/' . $node['nid']], $export_path, false);
+  }
+}
+
+/**
+ * _export_views
+ * viewsをhtml出力する
+ */
+function _export_views($root, $nids, $export_path){
+  if (module_exists('views')) {
+    //run through all the views and render pages to add to the zip file
+    $result = db_query("SELECT * FROM views_display WHERE display_plugin = 'page'");
+    while($view = db_fetch_array($result)){
+      $view_vars = unserialize($view['display_options']);
+      if (strpos($view_vars['path'],'admin/') === false && strpos($view_vars['path'],'front') === false){
+        $data = _get_html_data($root. $view_vars['path']);
+        $data = _html_export_rewrite_relative_urls($data,$nids, ".");
+        // Write HTML to file
+        _export_html_file($data, $nids[$view_vars['path']], $export_path, false);
+      }
+    }
+  }
+}
+
+/**
+ * _export_terms
+ * termをhtml出力する
+ */
+function _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_path){
+  $result = db_query("SELECT tid FROM {term_data} ORDER BY tid");
+  while ($term = db_fetch_array($result)){
+    if (in_array($term['tid'], $tids_need_pagenation)){
+      // pagenationが必要であれば
+      for ($i = $tids_page[$term['tid']]; $i > 0; $i--){
+        $data = _get_html_data($root. '?q=taxonomy/term/'. $term['tid']. '&page='. $i);
+        //$data = _html_export_rewrite_urls($data,$nids);
+        $data = _html_export_rewrite_relative_urls($data,$nids, "..");
+        // Write HTML to file
+        $page = $nids['taxonomy/term/'. $term['tid']. '&amp;page='. $i];
+        _export_html_file($data, $page, $export_path, false);
+      }
+    }
+    // ex.) index.php?q=taxonomy/term/1
+    $url = url('taxonomy/term/'. $term['tid']);
+    $data = _get_html_data($root. "index.php". $url);
+    //$data = _html_export_rewrite_urls($data,$nids);
+    $data = _html_export_rewrite_relative_urls($data,$nids, "..");
+    // Write HTML to file
+    $page = $nids['taxonomy/term/'. $term['tid']];
+    _export_html_file($data, $page, $export_path, false);
+  }
+}
+
+/**
+ * _export_custom_pages
+ * カスタムページをhtml出力する
+ */
+function _export_custom_pages($root, $nids, $export_path){
+  $pages = explode(',',_html_export_make_list(variable_get('html_export_pages', '')));
+  foreach ($pages as $page) {
+    $data = _get_html_data($root. $page);
+    //$data = _html_export_rewrite_urls($data,$nids);
+    $data = _html_export_rewrite_relative_urls($data,$nids, ".");
+    // Write HTML to file
+    _export_html_file($data, $page, $export_path, true);
+  }
+}
+
+/**
+ * フロントページのhtml出力
+ */
+function _export_front_page($root, $nodecount, $nids, $export_path){
+  // フロントページのpagenation
+  _export_front_pagenation($root, $nodecount, $nids, $export_path);
+  // get html
+  $data = _get_html_data($root. "index.php");
+  //$data = _html_export_rewrite_urls($data,$nids);
+  $data = _html_export_rewrite_relative_urls($data,$nids, ".");
+  // Write HTML to file
+  _export_html_file($data, "index", $export_path, true);
+}
+
+/**
+ * フロントページpagenationのhtml出力
+ */
+function _export_front_pagenation($root, $nodecount, $nids, $export_path){
+  for ($i = $nodecount; $i > 0; $i--){
+    $data = _get_html_data($root. '?q=node&page='. $i);
+    //$data = _html_export_rewrite_urls($data,$nids);
+    $data = _html_export_rewrite_relative_urls($data,$nids, ".");
+    // Write HTML to file
+    $page = $nids['node&amp;page='. $i];
+    _export_html_file($data, $page, $export_path, false);
+  }
 }
 
 /**
@@ -419,7 +630,6 @@ function _export_html_file($data, $page, $export_path, $html){
   fwrite($file,$data);
   fclose($file);
 }
-
 
 /**
  * Helper function to rewrite URLs.
@@ -447,12 +657,11 @@ function _html_export_remove_ext($url){
 function _html_export_rewrite_relative_urls($html, $nids, $relative){
   $root = _html_export_root_domain(false);
   //strip out file paths that have the full server in them
-  $html = trim_absolute_path($root, $html);
-
+  $html = _trim_absolute_path($root, $html);
   // Custom replacements
   // $replacements = explode(',',_html_export_make_list(variable_get('html_export_replace', '')));
-  // stylesheetなどのパスは相対的に変更する必要がある
-  $html = files_replacements($relative, $html);
+  // stylesheetなどのパスは相対的に変更する
+  $html = _files_replacements($relative, $html);
 
   //strip out just the node/ if it's left over and replace it with the correct form of the link so that they actually find each other
   foreach($nids as $key => $nidpath){
@@ -461,26 +670,18 @@ function _html_export_rewrite_relative_urls($html, $nids, $relative){
       $html = str_replace(base_path(),'',$html);
     }
     //account for links back to home where they are just a backslash cause it's at the root
-    $html = str_replace('index.php/?q=' . $key,$relative. '/'. $nidpath,$html);
-    $html = str_replace('index.php?q=' . $key,$relative. '/'. $nidpath,$html);
-    $html = str_replace('/?q=' . $key,$relative. '/'. $nidpath,$html);
-    $html = str_replace('?q=' . $key,$relative. '/'. $nidpath,$html);
+    $html = _home_path_replace($html, $key, $nidpath, $relative);
   }
-  $html = str_replace('?q=','',$html);
-  $html = str_replace('<a href="/"','<a href="'. $relative. '/'. 'index.html"',$html);
-  $html = str_replace('href="/','href="',$html);
-  $html = str_replace('src="/','src="',$html);
-  $html = str_replace('<a href=""','<a href="'. $relative. '/'. 'index.html"',$html);
+  $html = _home_link_replace($html, $relative);
 
   return $html;
 }
 
-
 /**
- * trim_absolute_path
+ * _trim_absolute_path
  * 絶対パスでルートを削る
  */
-function trim_absolute_path($root, $html){
+function _trim_absolute_path($root, $html){
   $html = str_replace($root . base_path(),"",$html);
   $html = str_replace($root,"",$html);
   $html = str_replace(_html_export_urlencode($root . base_path()),"",$html);
@@ -488,12 +689,11 @@ function trim_absolute_path($root, $html){
   return $html;
 }
 
-
 /**
- * files_replacements
+ * _files_replacements
  * drupalのファイルを相対パスに置換する
  */
-function files_replacements($relative, $html){
+function _files_replacements($relative, $html){
   $replacements = array("modules|$relative/modules", "sites|$relative/sites", "themes|$relative/themes", "misc|$relative/misc");
   foreach ($replacements as $replacement) {
     $keys = explode('|',$replacement);
@@ -502,43 +702,28 @@ function files_replacements($relative, $html){
   return $html;
 }
 
-
 /**
- * Helper function to rewrite URLs to internal links.
- function _html_export_rewrite_urls($html,$nids){
-   $root = _html_export_root_domain(false);
-   //strip out file paths that have the full server in them
-   trim_absolute_path($root, $html);
-
-   // Custom replacements
-   $replacements = explode(',',_html_export_make_list(variable_get('html_export_replace', '')));
-   foreach ($replacements as $replacement) {
-     $keys = explode('|',$replacement);
-     $html = str_replace($keys[0],$keys[1],$html);
-   }
-
-   //strip out just the node/ if it's left over and replace it with the correct form of the link so that they actually find each other
-   foreach($nids as $key => $nidpath){
-     //get rid of a base path if there is one
-     if (base_path() != '/'){
-       $html = str_replace(base_path(),'',$html);
-     }
-     //account for links back to home where they are just a backslash cause it's at the root
-     $html = str_replace('index.php/?q=' . $key,$nidpath,$html);
-     $html = str_replace('index.php?q=' . $key,$nidpath,$html);
-     $html = str_replace('/?q=' . $key,$nidpath,$html);
-     $html = str_replace('?q=' . $key,$nidpath,$html);
-   }
-   $html = str_replace('?q=','',$html);
-   $html = str_replace('<a href="/"','<a href="index.html"',$html);
-   $html = str_replace('href="/','href="',$html);
-   $html = str_replace('src="/','src="',$html);
-   $html = str_replace('<a href=""','<a href="index.html"',$html);
-
-   return $html;
+ * homeへのリンクを相対パスに変換する
+ */
+function _home_path_replace($html, $key, $nidpath, $relative){
+  $html = str_replace('index.php/?q=' . $key,$relative. '/'. $nidpath,$html);
+  $html = str_replace('index.php?q=' . $key,$relative. '/'. $nidpath,$html);
+  $html = str_replace('/?q=' . $key,$relative. '/'. $nidpath,$html);
+  $html = str_replace('?q=' . $key,$relative. '/'. $nidpath,$html);
+  return $html;
 }
 
+/**
+ * ホームへのhtmlリンクを相対パスに変換
  */
+function _home_link_replace($html, $relative){
+  $html = str_replace('?q=','',$html);
+  $html = str_replace('<a href="/"','<a href="'. $relative. '/'. 'index.html"',$html);
+  $html = str_replace('href="/','href="',$html);
+  $html = str_replace('src="/','src="',$html);
+  $html = str_replace('<a href=""','<a href="'. $relative. '/'. 'index.html"',$html);
+  return $html;
+}
 
 /**
  * Helper function to Convert a list to a comma seperated list.
