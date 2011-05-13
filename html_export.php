@@ -36,13 +36,37 @@ function html_export_help($section) {
     return t("HTMLエクスポートはあなたのdrupalサイトを静的html出力します.");
   }
 }
+/**
+ * hook_action_info()の実装
+ */
+function html_export_action_info(){
+  $info['html_export_action'] = array(
+    'type' => 'system', 
+    'description' => t('記事を再構築する'), 
+    'configurable' => FALSE, 
+    'hooks' => array(
+      'nodeapi' => array('view', 'insert', 'update', 'delete'), 
+      'comment' => array('view', 'insert', 'update', 'delete'), 
+      'user' => array('view', 'insert', 'update', 'delete', 'login'), 
+      'taxonomy' => array('view', 'insert', 'update', 'delete'), 
+    ), 
+  );
+
+  return $info;
+}
+/**
+ * Drupalアクション
+ */
+function html_export_action(){
+  _html_export_export(false);
+}
+
 /*
  * Implementation of hook_cron
  */
 function html_export_cron() {
   if ( (time() - variable_get('html_export_last', time())) > variable_set('html_export_cron', 0) ){
-    // デバッグテスト
-    _html_export_export();
+    _html_export_export(true);
   }
 }
 
@@ -134,7 +158,7 @@ function html_export_settings_validate($form, &$form_state) {
  */
 function html_export_settings_submit($form_id, $form_values) {
   if ($form_values["values"]["html_export_now"] == 1) {
-    _html_export_export();
+    _html_export_export(true);
   }
 }
 
@@ -205,7 +229,7 @@ function _skip_files($entry){
 /**
  * Export all nodes / views etc
  */
-function _html_export_export(){
+function _html_export_export($all){
   set_time_limit(_TIME_LIMIT);
 
   //クリーンURLの設定を保存
@@ -213,6 +237,13 @@ function _html_export_export(){
   _clean_url_off($clean);
 
   $root = _html_export_root_domain();
+
+  // 既存のコンテンツを保存した場合
+  if (!$all){
+    $edit_node = _trim_url_query($_SERVER['REQUEST_URI']); // ex.) node/1
+    $edit_node_id = substr($edit_node, 5); // 1以降が取れる
+  }
+
   //create a folder html_export to put the directory in
   $dir = file_create_path(file_directory_path() . '/html_export');
   file_check_directory($dir, 1);
@@ -236,9 +267,9 @@ function _html_export_export(){
   $nids = _set_nids_for_nodes($nids);
   // フロントページ用にnodepagenationを登録する
   $nodecount = _get_index_pages_having_pagenation();
-  $nids = _set_nids_for_nodepagenation($nids, $nodecount);
+  $nids = _set_nids_for_nodepagenation($nids, $nodecount, $all);
   // views用にnodeを登録する
-  $nids = _set_nids_for_views($nids);
+  $nids = _set_nids_for_views($nids, $all);
 
   // pagenationが必要なtidを求める
   $tids_need_pagenation = _get_tids_having_pagenation();
@@ -263,13 +294,16 @@ function _html_export_export(){
     $nids = _set_nids_for_term($nids, $term['tid']);
   }
 
+  // blogを登録する
+
+
   // フロントページ(記事一覧)のrss.xmlの登録
   $nids = _set_nids_for_xml($nids);
   // カスタムページ用にnodeを登録する
   $nids = _set_nids_for_custom_pages($nids);
 
   //run through all the nodes and render pages to add to the zip file
-  _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $tids_page, $nodecount);
+  _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $tids_page, $nodecount, $edit_node_id);
 
   //turn clean URLs back on if it was off temporarily
   _clean_url_on($clean);
@@ -448,6 +482,7 @@ function _set_nids_for_xml($nids){
 function _get_tids_having_pagenation(){
   $default_nodes_main = variable_get('default_nodes_main', 10);
   $pagenation_num = $default_nodes_main + 1;
+  // このクエリは正しくないが、大きめに取っているので問題はない
   $query = "SELECT tid FROM (SELECT DISTINCT nid, tid FROM {term_node} ) AS temp GROUP BY tid HAVING COUNT(*) >= "
     . $pagenation_num;
   $result = db_query($query);
@@ -482,17 +517,20 @@ function _trim_url_query($url){
   if (strpos(' ' . $url,'/?q=') != 0){
     $url = substr($url,4 + strpos($url,'/?q='));
   }
+  if (strpos(' '.$url, '/edit') != 0){
+    $url = substr($url, 0, -5);
+  }
   return $url;
 }
 
 /**
  * 全てのページのhtml出力
  */
-function _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $tids_page, $nodecount){
-  _export_nodes($root, $nids, $export_path);
+function _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $tids_page, $nodecount, $current_node_id = 0){
+  _export_nodes($root, $nids, $export_path, $current_node_id);
   _export_views($root, $nids, $export_path);
   // Export term pages
-  _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_path);
+  _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_path, $current_node_id);
   /* Export custom pages */
   _export_custom_pages($root, $nids, $export_path);
   /* Export homepage */
@@ -503,15 +541,26 @@ function _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $t
  * _export_nodes
  * nodesをhtml出力する
  */
-function _export_nodes($root, $nids, $export_path){
-  $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
+function _export_nodes($root, $nids, $export_path, $current_node_id = 0){
+  if ($current_node_id === 0){
+    $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
+  }else{
+    $result = db_query("SELECT nid FROM {node} WHERE status = 1 AND nid = ".$current_node_id);
+    $node_hidden = true;
+  }
   while($node = db_fetch_array($result)){
+    if ($node['nid'] == $current_node_id){
+      $node_hidden = false;
+    }
     $data = _get_html_data($root. "index.php?q=node/" . $node['nid']);
     //Rewrite all links
     //TODO:_html_export_rewrite_urlsはblogに対応していないので修正する必要有。
     $data = _html_export_rewrite_relative_urls($data,$nids, ".");
     // Write HTML to file
     _export_html_file($data, $nids['node/' . $node['nid']], $export_path, false);
+  }
+  if ($node_hidden){
+    _delete_html_file($export_path, $current_node_id);
   }
 }
 
@@ -539,8 +588,12 @@ function _export_views($root, $nids, $export_path){
  * _export_terms
  * termをhtml出力する
  */
-function _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_path){
-  $result = db_query("SELECT tid FROM {term_data} ORDER BY tid");
+function _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_path, $current_node_id = 0){
+  if ($current_node_id != 0){
+    $result = db_query("SELECT DISTINCT tid FROM {term_node} WHERE nid = ". $current_node_id);
+  }else{
+    $result = db_query("SELECT tid FROM {term_data} ORDER BY tid");
+  }
   while ($term = db_fetch_array($result)){
     if (in_array($term['tid'], $tids_need_pagenation)){
       // pagenationが必要であれば
@@ -629,6 +682,16 @@ function _export_html_file($data, $page, $export_path, $html){
   }
   fwrite($file,$data);
   fclose($file);
+}
+
+/**
+ * 既に存在するhtmlファイルを削除する
+ */
+function _delete_html_file($export_path, $current_node_id){
+  $path = $export_path. "/node". $current_node_id. ".html";
+  if (is_file($path)){
+    unlink($path);
+  }
 }
 
 /**
