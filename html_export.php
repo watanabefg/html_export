@@ -25,7 +25,7 @@
 //with this program; if not, write to the Free Software Foundation, Inc.,
 //51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-define("_TIME_LIMIT", 500000);
+define("_TIME_LIMIT", 600000);
 /**
  * Implementation of hook_help
  */
@@ -295,7 +295,9 @@ function _html_export_export($all){
   }
 
   // blogを登録する
-
+  $ret = _set_nids_for_blogs($export_path, $nids);
+  $nids = $ret[0];
+  $blogs_page = $ret[1]; // uid => maxpages
 
   // フロントページ(記事一覧)のrss.xmlの登録
   $nids = _set_nids_for_xml($nids);
@@ -303,7 +305,18 @@ function _html_export_export($all){
   $nids = _set_nids_for_custom_pages($nids);
 
   //run through all the nodes and render pages to add to the zip file
-  _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $tids_page, $nodecount, $edit_node_id);
+  _export_nodes($root, $nids, $export_path, $edit_node_id);
+  _export_views($root, $nids, $export_path);
+  // Export term pages
+  _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_path, $edit_node_id);
+  // Export blogs
+  _export_blogs($root, $nids, $export_path, $blogs_page);
+  /* Export custom pages */
+  _export_custom_pages($root, $nids, $export_path);
+  /* Export homepage */
+  _export_front_page($root, $nodecount, $nids, $export_path);
+  /* Export blog front page */
+  _export_blogfront_page($root, $nids, $export_path, $blogs_page);
 
   //turn clean URLs back on if it was off temporarily
   _clean_url_on($clean);
@@ -429,7 +442,9 @@ function _set_nids_for_custom_pages($nids){
   // Export custom pages
   $pages = explode(',',_html_export_make_list(variable_get('html_export_pages', '')));
   foreach ($pages as $page) {
-    $nids[$page] = $page . '.html';
+    if ($page != ""){
+      $nids[$page] = $page . '.html';
+    }
   }
   return $nids;
 }
@@ -448,6 +463,54 @@ function _set_nids_for_term($nids, $tid){
     $nids['taxonomy/term/'. $tid] = 'term'. $tid. '/index.html';
   }
   return $nids;
+}
+
+/**
+ * blogsをnidsにセットする
+ */
+function _set_nids_for_blogs($export_path, $nids){
+  $result = db_query("SELECT uid FROM {users} WHERE uid <> 0 ORDER BY uid");
+  $blogs_page = array();
+  while ($user = db_fetch_array($result)){
+    file_check_directory(file_create_path($export_path . '/blog'. $user['uid']), 1);
+    $result_page = db_query(
+      "SELECT truncate(count(*)/".variable_get('default_nodes_main', 10). ", 0) num FROM {node} WHERE type = 'blog' AND uid = ".$user['uid']
+    );
+    // 必要なページ数
+    $pagenumber = db_fetch_array($result_page);
+    $page = $pagenumber['num'];
+    if ($page > 0){
+      // pagenationが必要な場合だけ保存する
+      $blogs_page[$user['uid']] = $page;
+    }
+    for ($i = $page; $i > 0; $i--){
+      $nids['blog/'. $user['uid']. '&amp;page='. $i] = 'blog'. $user['uid']. '/page'. $i. '.html';
+    }
+    $url = url('blog/'. $user['uid']);
+    $url = _trim_url_query($url);
+    if ($url == 'blog/'.$user['uid']){
+      $nids['blog/'. $user['uid']] = 'blog'. $user['uid']. '/index.html';
+    }
+  }
+  file_check_directory(file_create_path($export_path . '/blog'), 1);
+
+  $result = db_query(
+    "SELECT truncate(count(*)/".variable_get('default_nodes_main', 10). ", 0) num FROM {node} WHERE type = 'blog'"
+  );
+  // 必要なページ数
+  $pagenumber = db_fetch_array($result);
+  $page = $pagenumber['num'];
+  if ($page > 0){
+    // pagenationが必要な場合だけ保存する
+    $blogs_page[0] = $page;
+  }
+  for ($i = $page; $i > 0; $i--){
+    $nids['blog&amp;page='. $i] = 'blog/page'. $i. '.html';
+  }
+  // 全体のブログを管理するURLのマッピング
+  $nids['blog'] = 'blog/index.html';
+
+  return array($nids, $blogs_page);
 }
 
 /**
@@ -524,25 +587,11 @@ function _trim_url_query($url){
 }
 
 /**
- * 全てのページのhtml出力
- */
-function _export_all_pages($root, $nids, $export_path, $tids_need_pagenation, $tids_page, $nodecount, $current_node_id = 0){
-  _export_nodes($root, $nids, $export_path, $current_node_id);
-  _export_views($root, $nids, $export_path);
-  // Export term pages
-  _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_path, $current_node_id);
-  /* Export custom pages */
-  _export_custom_pages($root, $nids, $export_path);
-  /* Export homepage */
-  _export_front_page($root, $nodecount, $nids, $export_path);
-}
-
-/**
  * _export_nodes
  * nodesをhtml出力する
  */
 function _export_nodes($root, $nids, $export_path, $current_node_id = 0){
-  if ($current_node_id === 0){
+  if ($current_node_id == 0){
     $result = db_query("SELECT nid FROM {node} WHERE status=1 ORDER BY nid DESC");
   }else{
     $result = db_query("SELECT nid FROM {node} WHERE status = 1 AND nid = ".$current_node_id);
@@ -592,7 +641,7 @@ function _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_
   if ($current_node_id != 0){
     $result = db_query("SELECT DISTINCT tid FROM {term_node} WHERE nid = ". $current_node_id);
   }else{
-    $result = db_query("SELECT tid FROM {term_data} ORDER BY tid");
+    $result = db_query("SELECT tid FROM {term_data} ORDER BY tid DESC");
   }
   while ($term = db_fetch_array($result)){
     if (in_array($term['tid'], $tids_need_pagenation)){
@@ -600,7 +649,7 @@ function _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_
       for ($i = $tids_page[$term['tid']]; $i > 0; $i--){
         $data = _get_html_data($root. '?q=taxonomy/term/'. $term['tid']. '&page='. $i);
         //$data = _html_export_rewrite_urls($data,$nids);
-        $data = _html_export_rewrite_relative_urls($data,$nids, "..");
+        $data = _html_export_rewrite_relative_urls($data, $nids, "..");
         // Write HTML to file
         $page = $nids['taxonomy/term/'. $term['tid']. '&amp;page='. $i];
         _export_html_file($data, $page, $export_path, false);
@@ -613,6 +662,57 @@ function _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_
     $data = _html_export_rewrite_relative_urls($data,$nids, "..");
     // Write HTML to file
     $page = $nids['taxonomy/term/'. $term['tid']];
+    _export_html_file($data, $page, $export_path, false);
+  }
+}
+
+/**
+ * _export_blogs
+ * blogをhtml出力する
+ */
+function _export_blogs($root, $nids, $export_path, $blogs_page){
+  $result = db_query("SELECT uid FROM {users} WHERE uid <> 0 ORDER BY uid");
+  while($user = db_fetch_array($result)){
+    if (array_key_exists($user['uid'], $blogs_page)){
+      // pagenationが必要であれば
+      for ($i = $blogs_page[$user['uid']]; $i > 0; $i--){
+        $data = _get_html_data($root. "?q=blog/". $user['uid']. "&page=". $i);
+        $data = _html_export_rewrite_relative_urls($data, $nids, "..");
+        _export_html_file($data, $nids['blog/'. $user['uid']. '&amp;page='. $i], $export_path, false);
+      }
+    }
+    $data = _get_html_data($root. "?q=blog/" . $user['uid']);
+    //Rewrite all links
+    $data = _html_export_rewrite_relative_urls($data,$nids, "..");
+    // Write HTML to file
+    _export_html_file($data, $nids['blog/' . $user['uid']], $export_path, false);
+  }
+}
+
+/**
+ * blogフロントページのhtml出力
+ */
+function _export_blogfront_page($root, $nids, $export_path, $blogs_page){
+  // フロントページのpagenation
+  _export_blogfront_pagenation($root, $blogs_page, $nids, $export_path);
+  // get html
+  $data = _get_html_data($root. "?q=blog");
+  //$data = _html_export_rewrite_urls($data,$nids);
+  $data = _html_export_rewrite_relative_urls($data,$nids, "..");
+  // Write HTML to file
+  _export_html_file($data, $nids['blog'], $export_path, false);
+}
+
+/**
+ * blogフロントページpagenationのhtml出力
+ */
+function _export_blogfront_pagenation($root, $blogs_page, $nids, $export_path){
+  for ($i = $blogs_page[0]; $i > 0; $i--){
+    $data = _get_html_data($root. '?q=blog&page='. $i);
+    //$data = _html_export_rewrite_urls($data,$nids);
+    $data = _html_export_rewrite_relative_urls($data,$nids, "..");
+    // Write HTML to file
+    $page = $nids['blog&amp;page='. $i];
     _export_html_file($data, $page, $export_path, false);
   }
 }
@@ -725,6 +825,10 @@ function _html_export_rewrite_relative_urls($html, $nids, $relative){
   // $replacements = explode(',',_html_export_make_list(variable_get('html_export_replace', '')));
   // stylesheetなどのパスは相対的に変更する
   $html = _files_replacements($relative, $html);
+
+  // /taxonomy/term/10 => /taxonomy/term/1/index.html0などになってしまうので、
+  // krsortをかける
+  krsort($nids);
 
   //strip out just the node/ if it's left over and replace it with the correct form of the link so that they actually find each other
   foreach($nids as $key => $nidpath){
