@@ -471,10 +471,12 @@ function _set_nids_for_term($nids, $tid){
 function _set_nids_for_blogs($export_path, $nids){
   $result = db_query("SELECT uid FROM {users} WHERE uid <> 0 ORDER BY uid");
   $blogs_page = array();
+  $exist_blog = false;
 
   while ($user = db_fetch_array($result)){
     $url = url('blog/'. $user['uid']);
     if (200 == $code = drupal_http_request($url)){
+      $exist_blog = true;
       file_check_directory(file_create_path($export_path . '/blog'. $user['uid']), 1);
       $result_page = db_query(
         "SELECT truncate(count(*)/".variable_get('default_nodes_main', 10). ", 0) num FROM {node} WHERE type = 'blog' AND uid = ".$user['uid']
@@ -495,23 +497,26 @@ function _set_nids_for_blogs($export_path, $nids){
       }
     }
   }
-  file_check_directory(file_create_path($export_path . '/blog'), 1);
 
-  $result = db_query(
-    "SELECT truncate(count(*)/".variable_get('default_nodes_main', 10). ", 0) num FROM {node} WHERE type = 'blog'"
-  );
-  // 必要なページ数
-  $pagenumber = db_fetch_array($result);
-  $page = $pagenumber['num'];
-  if ($page > 0){
-    // pagenationが必要な場合だけ保存する
-    $blogs_page[0] = $page;
+  if ($exist_blog){
+    file_check_directory(file_create_path($export_path . '/blog'), 1);
+
+    $result = db_query(
+      "SELECT truncate(count(*)/".variable_get('default_nodes_main', 10). ", 0) num FROM {node} WHERE type = 'blog'"
+    );
+    // 必要なページ数
+    $pagenumber = db_fetch_array($result);
+    $page = $pagenumber['num'];
+    if ($page > 0){
+      // pagenationが必要な場合だけ保存する
+      $blogs_page[0] = $page;
+    }
+    for ($i = $page; $i > 0; $i--){
+      $nids['blog&amp;page='. $i] = 'blog/page'. $i. '.html';
+    }
+    // 全体のブログを管理するURLのマッピング
+    $nids['blog'] = 'blog/index.html';
   }
-  for ($i = $page; $i > 0; $i--){
-    $nids['blog&amp;page='. $i] = 'blog/page'. $i. '.html';
-  }
-  // 全体のブログを管理するURLのマッピング
-  $nids['blog'] = 'blog/index.html';
 
   return array($nids, $blogs_page);
 }
@@ -676,19 +681,21 @@ function _export_terms($root, $tids_need_pagenation, $tids_page, $nids, $export_
 function _export_blogs($root, $nids, $export_path, $blogs_page){
   $result = db_query("SELECT uid FROM {users} WHERE uid <> 0 ORDER BY uid");
   while($user = db_fetch_array($result)){
-    if (array_key_exists($user['uid'], $blogs_page)){
-      // pagenationが必要であれば
-      for ($i = $blogs_page[$user['uid']]; $i > 0; $i--){
-        $data = _get_html_data($root. "?q=blog/". $user['uid']. "&page=". $i);
-        $data = _html_export_rewrite_relative_urls($data, $nids, "..");
-        _export_html_file($data, $nids['blog/'. $user['uid']. '&amp;page='. $i], $export_path, false);
+    if (array_key_exists('blog/'. $user['uid'], $nids)){
+      if (array_key_exists($user['uid'], $blogs_page)){
+        // pagenationが必要であれば
+        for ($i = $blogs_page[$user['uid']]; $i > 0; $i--){
+          $data = _get_html_data($root. "?q=blog/". $user['uid']. "&page=". $i);
+          $data = _html_export_rewrite_relative_urls($data, $nids, "..");
+          _export_html_file($data, $nids['blog/'. $user['uid']. '&amp;page='. $i], $export_path, false);
+        }
       }
+      $data = _get_html_data($root. "?q=blog/" . $user['uid']);
+      //Rewrite all links
+      $data = _html_export_rewrite_relative_urls($data,$nids, "..");
+      // Write HTML to file
+      _export_html_file($data, $nids['blog/' . $user['uid']], $export_path, false);
     }
-    $data = _get_html_data($root. "?q=blog/" . $user['uid']);
-    //Rewrite all links
-    $data = _html_export_rewrite_relative_urls($data,$nids, "..");
-    // Write HTML to file
-    _export_html_file($data, $nids['blog/' . $user['uid']], $export_path, false);
   }
 }
 
@@ -696,14 +703,16 @@ function _export_blogs($root, $nids, $export_path, $blogs_page){
  * blogフロントページのhtml出力
  */
 function _export_blogfront_page($root, $nids, $export_path, $blogs_page){
-  // フロントページのpagenation
-  _export_blogfront_pagenation($root, $blogs_page, $nids, $export_path);
-  // get html
-  $data = _get_html_data($root. "?q=blog");
-  //$data = _html_export_rewrite_urls($data,$nids);
-  $data = _html_export_rewrite_relative_urls($data,$nids, "..");
-  // Write HTML to file
-  _export_html_file($data, $nids['blog'], $export_path, false);
+  if (array_key_exists('blog', $nids)){
+    // フロントページのpagenation
+    _export_blogfront_pagenation($root, $blogs_page, $nids, $export_path);
+    // get html
+    $data = _get_html_data($root. "?q=blog");
+    //$data = _html_export_rewrite_urls($data,$nids);
+    $data = _html_export_rewrite_relative_urls($data,$nids, "..");
+    // Write HTML to file
+    _export_html_file($data, $nids['blog'], $export_path, false);
+  }
 }
 
 /**
