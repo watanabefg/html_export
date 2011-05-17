@@ -471,25 +471,28 @@ function _set_nids_for_term($nids, $tid){
 function _set_nids_for_blogs($export_path, $nids){
   $result = db_query("SELECT uid FROM {users} WHERE uid <> 0 ORDER BY uid");
   $blogs_page = array();
+
   while ($user = db_fetch_array($result)){
-    file_check_directory(file_create_path($export_path . '/blog'. $user['uid']), 1);
-    $result_page = db_query(
-      "SELECT truncate(count(*)/".variable_get('default_nodes_main', 10). ", 0) num FROM {node} WHERE type = 'blog' AND uid = ".$user['uid']
-    );
-    // 必要なページ数
-    $pagenumber = db_fetch_array($result_page);
-    $page = $pagenumber['num'];
-    if ($page > 0){
-      // pagenationが必要な場合だけ保存する
-      $blogs_page[$user['uid']] = $page;
-    }
-    for ($i = $page; $i > 0; $i--){
-      $nids['blog/'. $user['uid']. '&amp;page='. $i] = 'blog'. $user['uid']. '/page'. $i. '.html';
-    }
     $url = url('blog/'. $user['uid']);
-    $url = _trim_url_query($url);
-    if ($url == 'blog/'.$user['uid']){
-      $nids['blog/'. $user['uid']] = 'blog'. $user['uid']. '/index.html';
+    if (200 == $code = drupal_http_request($url)){
+      file_check_directory(file_create_path($export_path . '/blog'. $user['uid']), 1);
+      $result_page = db_query(
+        "SELECT truncate(count(*)/".variable_get('default_nodes_main', 10). ", 0) num FROM {node} WHERE type = 'blog' AND uid = ".$user['uid']
+      );
+      // 必要なページ数
+      $pagenumber = db_fetch_array($result_page);
+      $page = $pagenumber['num'];
+      if ($page > 0){
+        // pagenationが必要な場合だけ保存する
+        $blogs_page[$user['uid']] = $page;
+      }
+      for ($i = $page; $i > 0; $i--){
+        $nids['blog/'. $user['uid']. '&amp;page='. $i] = 'blog'. $user['uid']. '/page'. $i. '.html';
+      }
+      $url = _trim_url_query($url);
+      if ($url == 'blog/'.$user['uid']){
+        $nids['blog/'. $user['uid']] = 'blog'. $user['uid']. '/index.html';
+      }
     }
   }
   file_check_directory(file_create_path($export_path . '/blog'), 1);
