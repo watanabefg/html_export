@@ -358,10 +358,10 @@ function _clean_url_on($clean){
 function _file_check_drupal_directories($export_path){
   file_check_directory(file_create_path($export_path),1);
   file_check_directory(file_create_path($export_path . '/' . file_directory_path()),1);
-  file_check_directory(file_create_path($export_path . '/sites'),1);
-  file_check_directory(file_create_path($export_path . '/modules'),1);
-  file_check_directory(file_create_path($export_path . '/themes'),1);
-  file_check_directory(file_create_path($export_path . '/misc'),1);
+  file_check_directory(file_create_path($export_path . '/../sites'),1);
+  file_check_directory(file_create_path($export_path . '/../modules'),1);
+  file_check_directory(file_create_path($export_path . '/../themes'),1);
+  file_check_directory(file_create_path($export_path . '/../misc'),1);
 }
 
 /**
@@ -369,10 +369,10 @@ function _file_check_drupal_directories($export_path){
  * export&copy drupal setting directories
  */
 function _html_export_copy_drupal_directories($export_path){
-  _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'sites',$export_path . '/sites');
-  _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'modules',$export_path . '/modules');
-  _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'themes',$export_path . '/themes');
-  _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'misc',$export_path . '/misc');
+  _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'sites',$export_path . '/../sites');
+  _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'modules',$export_path . '/../modules');
+  _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'themes',$export_path . '/../themes');
+  _html_export_copyr(str_replace('index.php','',$_SERVER['PATH_TRANSLATED']) . 'misc',$export_path . '/../misc');
 }
 
 /**
@@ -588,8 +588,8 @@ function _trim_url_query($url){
   if (strpos(' ' . $url,'/?q=') != 0){
     $url = substr($url,4 + strpos($url,'/?q='));
   }
-  if (strpos(' '.$url, '/edit') != 0){
-    $url = substr($url, 0, -5);
+  if (($pos = strpos(' '.$url, '/edit')) !== false){
+    $url = substr($url, 0, $pos - 1);
   }
   return $url;
 }
@@ -873,7 +873,14 @@ function _trim_absolute_path($root, $html){
  * drupalのファイルを相対パスに置換する
  */
 function _files_replacements($relative, $html){
-  $replacements = array("modules|$relative/modules", "sites|$relative/sites", "themes|$relative/themes", "misc|$relative/misc");
+  $replacements = array(
+    'modules|../'.$relative.'/modules',
+    'sites|../'.$relative. '/sites',
+    'themes|../'. $relative. '/themes',
+    'misc|../'. $relative. '/misc',
+    '/./|/',
+    'all/../|all/',
+  );
   foreach ($replacements as $replacement) {
     $keys = explode('|',$replacement);
     $html = str_replace($keys[0],$keys[1],$html);
