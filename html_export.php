@@ -874,10 +874,12 @@ function _trim_absolute_path($root, $html){
  */
 function _files_replacements($relative, $html){
   $replacements = array(
-    'modules|../'.$relative.'/modules',
-    'sites|../'.$relative. '/sites',
-    'themes|../'. $relative. '/themes',
-    'misc|../'. $relative. '/misc',
+    'modules|'.$relative.'/modules',
+    conf_path().'/files|'. $relative. '/files',
+    'sites/all|'.$relative. '/all',
+    'sites|'.$relative. '/sites',
+    'themes|'. $relative. '/themes',
+    'misc|'. $relative. '/misc',
     '/./|/',
     'all/../|all/',
   );
